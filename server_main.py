@@ -108,7 +108,10 @@ class ServerController:
                 break
             elif message_type == "reconnect":
                 has_new_change = True
-                continue
+            elif message_type == "chat":
+                print("Start of Chat Message".center(40, "#"))
+                print(json_content['text_message'])
+                print("End of Chat Message".center(40, "#"))
 
     def place_computer_mark(self, game):
         for i in range(3):

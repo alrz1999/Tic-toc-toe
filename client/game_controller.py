@@ -45,6 +45,11 @@ class GameController:
                 await self.game_stub.place_mark(row, col)
             elif line == 'cancel':
                 await self.game_stub.cancel_game()
+            elif len(line) == 0:
+                continue
+            elif line.startswith("chat:"):
+                text_message = line.replace("chat:", '')
+                await self.game_stub.send_message(text_message)
             else:
                 print(f"not a valid message : {line}")
                 # await self.game_stub.send_message(line)
