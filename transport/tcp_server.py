@@ -17,6 +17,9 @@ class BaseTCPServer:
         accepted_socket, address = await self.loop.sock_accept(self.sock)
         return accepted_socket, address
 
+    def close(self):
+        self.sock.close()
+
     def __enter__(self):
         return self
 

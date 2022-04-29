@@ -81,6 +81,9 @@ class MultiplayerController:
             sock, address = await tcp_server.accept()
             print("socket accepted. current sockets size = ", len(self.client_by_username))
             self.loop.create_task(self.async_handle_multiplayer(sock))
+            await asyncio.sleep(1)
+        print("try to close tcp server")
+        tcp_server.close()
         print("server socketserver fully initialized")
 
 
