@@ -4,7 +4,7 @@ import logging
 # XXX: REMOVE THIS LINE IN PRODUCTION!
 import sys
 
-from utils import json_decode, json_encode
+from utils import json_decode, json_encode, async_input
 from transport.tcp_client import BaseTCPClient, BaseMessage, SocketClosedException
 from transport.tcp_server import BaseTCPServer
 
@@ -121,26 +121,25 @@ class ServerSocketHandler:
         self.state = self.states[0]
 
     async def handle_unmanaged_socket(self, sock, address):
-        tcp_client = BaseTCPClient(address[0], address[1], sock)
-        while True:
-            if self.state != self.states[0]:
-                await asyncio.sleep(1)
-                continue
-
-            print("blob")
-            await asyncio.sleep(5)
-            # try:
-            #     message: BaseMessage = await asyncio.wait_for(tcp_client.receive(), 5)
-            #     json_content = json_decode(message.content, 'utf-8')
-            #     if json_content['type'] == 'start_single':
-            #         pass
-            #     elif json_content['type'] == 'start_multiplayer':
-            #         pass
-            #     else:
-            #         logger.debug("Unknown message content= ", json_content)
-            # except:
-            #     print('waweil;a')
-            #     pass
+        pass
+        # tcp_client = BaseTCPClient(address[0], address[1], sock)
+        # while True:
+        #     if self.state != self.states[0]:
+        #         await asyncio.sleep(1)
+        #         continue
+        #     await asyncio.sleep(5)
+        #     try:
+        #         message: BaseMessage = await asyncio.wait_for(tcp_client.receive(), 5)
+        #         json_content = json_decode(message.content, 'utf-8')
+        #         if json_content['type'] == 'start_single':
+        #             pass
+        #         elif json_content['type'] == 'start_multiplayer':
+        #             pass
+        #         else:
+        #             logger.debug("Unknown message content= ", json_content)
+        #     except:
+        #         print('waweil;a')
+        #         pass
 
     def send(self, message):
         pass
@@ -217,9 +216,11 @@ class ClientSocketHandler:
         self.host = address[0]
         self.port = address[1]
         self.game_server_socket_server = game_server_socket_server
+        self.states = ['connected', "disconnected"]
+        self.state = self.states[1]
 
     async def handle_unmanaged_socket(self, sock, address):
-        # TODO: add to list of connected clients
+        self.state = self.states[0]
         tcp_client = BaseTCPClient(address[0], address[1], sock)
         while True:
             try:
@@ -239,7 +240,8 @@ class ClientSocketHandler:
                     logger.debug("Unknown message content= ", json_content)
             except SocketClosedException:
                 print("SocketClosedException at handle unmanaged socket")
-        # TODO: remove from list of connected clients
+                break
+        self.state = self.states[1]
 
     def send(self, message):
         pass
@@ -316,6 +318,7 @@ class ClientsSocketServer:
         self.tcp_server = BaseTCPServer(host, port, backlog=5)
         self.game_server_socket_server = game_server_socket_server
         self.loop = asyncio.get_event_loop()
+        self.client_handlers = []
 
     async def accept(self):
         logger.info(f'start of SocketServer-accept with host={self.tcp_server.host} and port={self.tcp_server.port}')
@@ -324,7 +327,12 @@ class ClientsSocketServer:
             sock, address = await self.tcp_server.accept()
             logger.debug("client socket accepted")
             client_socket_handler = ClientSocketHandler(sock, address, self.game_server_socket_server)
+            self.client_handlers.append(client_socket_handler)
             self.loop.create_task(client_socket_handler.handle_unmanaged_socket(sock, address))
+
+    def get_number_of_connected_clients(self):
+        self.client_handlers = [x for x in self.client_handlers if x.state != x.states[1]]
+        return len(self.client_handlers)
 
 
 class WebServer:
@@ -339,6 +347,19 @@ class WebServer:
         pass
 
 
+async def control_console(game_server_socket_server: GameServersSocketServer,
+                          clients_socket_server: ClientsSocketServer):
+    while True:
+        print("WebServer Console".center(40, '*'))
+        line = await async_input("available commands:\n/users\n/servers\n")
+        if line == '/users':
+            print("number of connected clients: ", clients_socket_server.get_number_of_connected_clients())
+        elif line == '/servers':
+            game_server_socket_server.all_sockets = [x for x in game_server_socket_server.all_sockets if
+                                                     x.state != "disconnected"]
+            print("number of running servers: ", len(game_server_socket_server.all_sockets))
+
+
 async def start_webserver():
     # TODO: open socket and bind for accepting new clients and new servers
     logger.info('start of start_webserver')
@@ -346,7 +367,8 @@ async def start_webserver():
     clients_socket_server = ClientsSocketServer('127.0.0.1', 8989, game_server_socket_server)
     await asyncio.gather(*[
         asyncio.create_task(clients_socket_server.accept()),
-        asyncio.create_task(game_server_socket_server.accept())
+        asyncio.create_task(game_server_socket_server.accept()),
+        asyncio.create_task(control_console(game_server_socket_server, clients_socket_server))
     ])
     logger.info('end of start_webserver')
 
