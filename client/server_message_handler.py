@@ -19,7 +19,11 @@ class MessageHandler:
         message_type = message['type']
 
         if message_type == 'server_assigned':
-            self.game_controller.state = self.game_controller.states[2]
+            game_type = message.get("game_type")
+            if game_type == 'multi':
+                self.game_controller.state = self.game_controller.states[1]
+            else:
+                self.game_controller.state = self.game_controller.states[2]
         elif message_type == 'show_game_status':
             self.game_controller.state = self.game_controller.states[2]
             game_status = message['game_status']
@@ -42,3 +46,7 @@ class MessageHandler:
         elif message_type == 'server_crashed':
             print("Server crashed. Press Enter to return to Main menu")
             self.game_controller.state = self.game_controller.states[3]
+        elif message_type == "chat":
+            print("Start of Chat Message".center(40, "#"))
+            print(message['text_message'])
+            print("End of Chat Message".center(40, "#"))

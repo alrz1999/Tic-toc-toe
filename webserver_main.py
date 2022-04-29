@@ -12,6 +12,36 @@ logging.basicConfig(format='%(asctime)s %(lineno)d %(levelname)s:%(message)s', l
 logger = logging.getLogger(__name__)
 
 
+class ServerSocketHandler:
+    def __init__(self, socket, address):
+        self.socket = socket
+        self.host = address[0]
+        self.port = address[1]
+        self.states = ['unallocated', 'allocated', 'mid-allocated', 'disconnected', 'waiting']
+        self.state = self.states[0]
+
+    async def handle_unmanaged_socket(self, sock, address):
+        pass
+        # tcp_client = BaseTCPClient(address[0], address[1], sock)
+        # while True:
+        #     if self.state != self.states[0]:
+        #         await asyncio.sleep(1)
+        #         continue
+        #     await asyncio.sleep(5)
+        #     try:
+        #         message: BaseMessage = await asyncio.wait_for(tcp_client.receive(), 5)
+        #         json_content = json_decode(message.content, 'utf-8')
+        #         if json_content['type'] == 'start_single':
+        #             pass
+        #         elif json_content['type'] == 'start_multiplayer':
+        #             pass
+        #         else:
+        #             logger.debug("Unknown message content= ", json_content)
+        #     except:
+        #         print('waweil;a')
+        #         pass
+
+
 class ServerConnectionException(Exception):
     def __init__(self, message):
         super().__init__(message)
@@ -112,40 +142,25 @@ class ChatRoom:
         await asyncio.gather(*tasks)
 
 
-class ServerSocketHandler:
-    def __init__(self, socket, address):
-        self.socket = socket
-        self.host = address[0]
-        self.port = address[1]
-        self.states = ['unallocated', 'allocated', 'mid-allocated', 'disconnected', 'waiting']
-        self.state = self.states[0]
+class GroupChatRoom:
+    def __init__(self, host, port, server_socket_handler: ServerSocketHandler):
+        self.host = host
+        self.port = port
+        self.server_socket_handler = server_socket_handler
+        self.tasks = []
 
-    async def handle_unmanaged_socket(self, sock, address):
-        pass
-        # tcp_client = BaseTCPClient(address[0], address[1], sock)
-        # while True:
-        #     if self.state != self.states[0]:
-        #         await asyncio.sleep(1)
-        #         continue
-        #     await asyncio.sleep(5)
-        #     try:
-        #         message: BaseMessage = await asyncio.wait_for(tcp_client.receive(), 5)
-        #         json_content = json_decode(message.content, 'utf-8')
-        #         if json_content['type'] == 'start_single':
-        #             pass
-        #         elif json_content['type'] == 'start_multiplayer':
-        #             pass
-        #         else:
-        #             logger.debug("Unknown message content= ", json_content)
-        #     except:
-        #         print('waweil;a')
-        #         pass
-
-    def send(self, message):
-        pass
-
-    def receive(self):
-        pass
+    async def add_client(self, client_tcp_client, start_message: BaseMessage = None):
+        server_client = BaseTCPClient(self.host, self.port)
+        await server_client.connect()
+        await server_client.send(start_message)
+        bridge = Bridge(server_client, client_tcp_client)
+        task = asyncio.create_task(bridge.run_full_duplex())
+        self.tasks.append(task)
+        try:
+            await task
+        except ClientConnectionException:
+            self.tasks.remove(task)
+            raise
 
 
 class GameServersSocketServer:
@@ -155,6 +170,9 @@ class GameServersSocketServer:
         self.all_sockets = []
         self.unallocated_sockets = []
         self.waiting_sockets_by_userid = dict()
+        self.group_chat_rooms: list[GroupChatRoom] = []
+        self.unallocated_group_chat_rooms: list[GroupChatRoom] = []
+        self.waiting_chats_by_userid = dict()
 
     async def accept(self):
         logger.info(f'start of SocketServer-accept with host={self.tcp_server.host} and port={self.tcp_server.port}')
@@ -163,9 +181,9 @@ class GameServersSocketServer:
             sock, address = await self.tcp_server.accept()
             logger.info('game server sock accepted')
             server_tcp_client = BaseTCPClient("", 1, sock)
-            new_address = await server_tcp_client.receive()
-
-            server_socket_handler = ServerSocketHandler(sock, address)
+            message = await server_tcp_client.receive()
+            json_content = json_decode(message.content, encoding='utf-8')
+            server_socket_handler = ServerSocketHandler(sock, (json_content["host"], json_content["port"]))
 
             self.all_sockets.append(server_socket_handler)
             self.unallocated_sockets.append(server_socket_handler)
@@ -190,6 +208,12 @@ class GameServersSocketServer:
         self.waiting_sockets_by_userid[username] = server_socket_handler
         self.loop.create_task(self._move_from_waiting_to_unallocated(username, server_socket_handler))
 
+    def pop_unallocated_chat_room(self):
+        try:
+            return self.unallocated_group_chat_rooms.pop()
+        except:
+            return None
+
     async def _move_from_waiting_to_unallocated(self, username, server_socket_handler):
         print("_move_from_waiting_to_unallocated")
         await asyncio.sleep(5)
@@ -203,6 +227,32 @@ class GameServersSocketServer:
                     "username": username
                 }
 
+                tcp_server_client = BaseTCPClient(handler.host, handler.port,
+                                                  handler.socket)
+                await tcp_server_client.send(BaseMessage({}, json_encode(abort_message, encoding='utf-8')))
+                self.unallocated_sockets.append(handler)
+                handler.state = handler.states[0]
+
+    def move_to_waiting_chat_rooms(self, username, chat_room: GroupChatRoom):
+        self.waiting_chats_by_userid[username] = chat_room
+        self.loop.create_task(self._move_chat_from_waiting_to_unallocated(username, chat_room))
+
+    async def _move_chat_from_waiting_to_unallocated(self, username, chat_room: GroupChatRoom):
+        print("_move_chat_from_waiting_to_unallocated")
+        await asyncio.sleep(5)
+        print("after 10 second")
+        print(self.waiting_chats_by_userid.items())
+        if username in self.waiting_chats_by_userid:
+            chat: GroupChatRoom = self.waiting_chats_by_userid.pop(username)
+            if chat == chat_room:
+                abort_message = {
+                    "type": "abort_game",
+                    "username": username
+                }
+                for task in chat.tasks:
+                    if not task.done():
+                        task.cancel()
+                handler = chat.server_socket_handler
                 tcp_server_client = BaseTCPClient(handler.host, handler.port,
                                                   handler.socket)
                 await tcp_server_client.send(BaseMessage({}, json_encode(abort_message, encoding='utf-8')))
@@ -309,8 +359,61 @@ class ClientSocketHandler:
             self.game_server_socket_server.unallocated_sockets.append(unallocated_server_socket)
             break
 
-    async def handle_multi_player_game(self, tcp_client: BaseTCPClient, message: BaseMessage):
-        pass
+    async def handle_multi_player_game(self, tcp_client: BaseTCPClient, start_message: BaseMessage):
+        while True:
+            username = json_decode(start_message.content, 'utf-8')['username']
+            chat_room = self.game_server_socket_server.pop_unallocated_chat_room()
+            if chat_room is None:
+                unallocated_server_socket: ServerSocketHandler = await self.game_server_socket_server.pop_unallocated_socket()
+
+                tcp_server_client = BaseTCPClient(unallocated_server_socket.host, unallocated_server_socket.port,
+                                                  unallocated_server_socket.socket)
+
+                unallocated_server_socket.state = unallocated_server_socket.states[2]
+
+                try:
+                    await tcp_server_client.send(start_message)
+                except SocketClosedException:
+                    unallocated_server_socket.state = unallocated_server_socket.states[3]
+                    continue
+
+                server_assigned_message = {
+                    "type": "server_assigned",
+                    "game_type": "multi"
+                }
+
+                try:
+                    await tcp_client.send(BaseMessage({}, json_encode(server_assigned_message, encoding='utf-8')))
+                except SocketClosedException:
+                    unallocated_server_socket.state = unallocated_server_socket.states[0]
+                    self.game_server_socket_server.unallocated_sockets.append(unallocated_server_socket)
+                    raise ClientConnectionException("error")
+
+                logger.debug("before creating chatroom")
+                chat_room = GroupChatRoom(unallocated_server_socket.host, unallocated_server_socket.port, unallocated_server_socket)
+                self.game_server_socket_server.unallocated_group_chat_rooms.append(chat_room)
+                self.game_server_socket_server.group_chat_rooms.append(chat_room)
+                logger.debug('Group chatroom created')
+            try:
+                await chat_room.add_client(tcp_client, start_message)
+            except ServerConnectionException:
+                server_socket_handler = chat_room.server_socket_handler
+                server_socket_handler.state = server_socket_handler.states[3]
+                server_crashed_message = {
+                    "type": "server_crashed"
+                }
+
+                await tcp_client.send(BaseMessage({}, json_encode(server_crashed_message, encoding="utf-8")))
+                break
+            except ClientConnectionException:
+                self.game_server_socket_server.move_to_waiting_chat_rooms(username, chat_room)
+                raise ClientConnectionException("error")
+            break
+
+        if all(task.done() for task in chat_room.tasks):
+            if chat_room.server_socket_handler not in self.game_server_socket_server.unallocated_sockets:
+                self.game_server_socket_server.unallocated_sockets.append(chat_room.server_socket_handler)
+                chat_room.server_socket_handler.state = chat_room.server_socket_handler.states[0]
 
 
 class ClientsSocketServer:

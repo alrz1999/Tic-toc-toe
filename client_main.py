@@ -20,16 +20,21 @@ async def start_client():
     while True:
         tcp_client = BaseTCPClient(HOST, PORT)
 
-        for timeout in [1, 3, 10]:
-            try:
-                await tcp_client.connect()
+        try:
+            await tcp_client.connect()
+
+        except ConnectionRefusedError:
+            for timeout in [1, 3, 10]:
+                try:
+                    print(f"Can not connect to webserver. Trying to reconnect after {timeout}s.")
+                    await asyncio.sleep(timeout)
+                    await tcp_client.connect()
+                    break
+                except ConnectionRefusedError:
+                    pass
+            else:
+                print("Webserver is not available. Try another time.")
                 break
-            except ConnectionRefusedError:
-                print(f"Can not connect to webserver. Trying to reconnect after {timeout}s.")
-                await asyncio.sleep(timeout)
-        else:
-            print("Webserver is not available. Try another time.")
-            break
 
         game_client = GameClient(username, tcp_client)
         game_controller = GameController(game_client)
