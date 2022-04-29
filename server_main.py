@@ -104,6 +104,11 @@ class ServerController:
                     has_new_change = True
                 except:
                     pass
+            elif message_type == "abort_game":
+                break
+            elif message_type == "reconnect":
+                has_new_change = True
+                continue
 
     def place_computer_mark(self, game):
         for i in range(3):

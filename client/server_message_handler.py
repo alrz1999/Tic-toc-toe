@@ -21,6 +21,7 @@ class MessageHandler:
         if message_type == 'server_assigned':
             self.game_controller.state = self.game_controller.states[2]
         elif message_type == 'show_game_status':
+            self.game_controller.state = self.game_controller.states[2]
             game_status = message['game_status']
             game_board = message['game_board']
             print("game_status = ", game_status)
@@ -38,3 +39,6 @@ class MessageHandler:
                 self.game_controller.state = self.game_controller.states[3]
             else:
                 print('is your turn= ', message['current_user'] == message['your_mark'])
+        elif message_type == 'server_crashed':
+            print("Server crashed. Press Enter to return to Main menu")
+            self.game_controller.state = self.game_controller.states[3]
