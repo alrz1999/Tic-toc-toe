@@ -148,19 +148,54 @@ class GroupChatRoom:
         self.port = port
         self.server_socket_handler = server_socket_handler
         self.tasks = []
+        self.counter = 0
 
     async def add_client(self, client_tcp_client, start_message: BaseMessage = None):
         server_client = BaseTCPClient(self.host, self.port)
         await server_client.connect()
         await server_client.send(start_message)
         bridge = Bridge(server_client, client_tcp_client)
-        task = asyncio.create_task(bridge.run_full_duplex())
-        self.tasks.append(task)
+        self.counter += 1
+        task = None
         try:
+            change_tasks = [asyncio.create_task(self.not_change()), asyncio.create_task(self.change(client_tcp_client))]
+            done, pending = await asyncio.wait(change_tasks, return_when=asyncio.FIRST_COMPLETED)
+            feature, = done
+            for task in change_tasks:
+                if not task.done():
+                    task.cancel()
+            if feature.result():
+                print("change happened in group chatroom")
+                message = {
+                    "type": "change_game"
+                }
+
+                await BaseTCPClient("df", 1, self.server_socket_handler.socket).send(
+                    BaseMessage({}, json_encode(message, encoding='utf-8')))
+                return
+            task = asyncio.create_task(bridge.run_full_duplex())
+            self.tasks.append(task)
             await task
         except ClientConnectionException:
             self.tasks.remove(task)
             raise
+
+    async def change(self, tcp_client: BaseTCPClient):
+        print("in change")
+        while True:
+            message = await tcp_client.receive()
+            print(message)
+            json_content = json_decode(message.content, encoding='utf-8')
+            if json_content['type'] == "change_game" and self.counter <= 1:
+                return True
+
+    async def not_change(self):
+        print("in not_change")
+        while True:
+            if self.counter >= 2:
+                print("not_change return")
+                return False
+            await asyncio.sleep(1)
 
 
 class GameServersSocketServer:
@@ -364,8 +399,18 @@ class ClientSocketHandler:
             username = json_decode(start_message.content, 'utf-8')['username']
             chat_room = self.game_server_socket_server.pop_unallocated_chat_room()
             if chat_room is None:
-                unallocated_server_socket: ServerSocketHandler = await self.game_server_socket_server.pop_unallocated_socket()
+                tasks = [asyncio.create_task(x) for x in [self.change_requested(tcp_client),
+                                                          self.game_server_socket_server.pop_unallocated_socket()]]
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                feature, = done
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if type(feature.result()) != ServerSocketHandler:
+                    print("returned in handle_multi_player_game")
+                    return
 
+                unallocated_server_socket = feature.result()
                 tcp_server_client = BaseTCPClient(unallocated_server_socket.host, unallocated_server_socket.port,
                                                   unallocated_server_socket.socket)
 
@@ -390,7 +435,8 @@ class ClientSocketHandler:
                     raise ClientConnectionException("error")
 
                 logger.debug("before creating chatroom")
-                chat_room = GroupChatRoom(unallocated_server_socket.host, unallocated_server_socket.port, unallocated_server_socket)
+                chat_room = GroupChatRoom(unallocated_server_socket.host, unallocated_server_socket.port,
+                                          unallocated_server_socket)
                 self.game_server_socket_server.unallocated_group_chat_rooms.append(chat_room)
                 self.game_server_socket_server.group_chat_rooms.append(chat_room)
                 logger.debug('Group chatroom created')
@@ -414,6 +460,13 @@ class ClientSocketHandler:
             if chat_room.server_socket_handler not in self.game_server_socket_server.unallocated_sockets:
                 self.game_server_socket_server.unallocated_sockets.append(chat_room.server_socket_handler)
                 chat_room.server_socket_handler.state = chat_room.server_socket_handler.states[0]
+
+    async def change_requested(self, tcp_client: BaseTCPClient):
+        while True:
+            message = await tcp_client.receive()
+            json_content = json_decode(message.content, encoding='utf-8')
+            if json_content['type'] == "change_game":
+                return True
 
 
 class ClientsSocketServer:

@@ -13,9 +13,12 @@ class GameController:
         self.game_stub: GameStub = GameStub(game_client)
         self.states = ['waiting for server', 'waiting for second user', 'playing', 'idle']
         self.state = self.states[0]
+        self.quit = False
 
     async def async_control_main_menu(self):
         while True:
+            if self.quit:
+                return
             command = await async_input("Main Menu\n1.Training\n2.Multiplayer\n3.Exit\n")
             command_lower = command.lower()
             try:
@@ -36,6 +39,9 @@ class GameController:
         await self.game_stub.start_game("single")
 
         while self.state != self.states[3]:
+            if self.quit:
+                return
+
             if self.state == self.states[0]:
                 print("Training Menu\nWaiting for a free server to start game...\n")
             line = await async_input("Enter your command\n")
@@ -50,6 +56,8 @@ class GameController:
             elif line.startswith("chat:"):
                 text_message = line.replace("chat:", '')
                 await self.game_stub.send_message(text_message)
+            elif line == '/exit':
+                self.quit = True
             else:
                 print(f"not a valid message : {line}")
 
@@ -58,6 +66,8 @@ class GameController:
         await self.game_stub.start_game("multi")
 
         while self.state != self.states[3]:
+            if self.quit:
+                return
             if self.state == self.states[0]:
                 print("Waiting for a free server to start game...\n")
             if self.state == self.states[1]:
@@ -74,5 +84,11 @@ class GameController:
             elif line.startswith("chat:"):
                 text_message = line.replace("chat:", '')
                 await self.game_stub.send_message(text_message)
+            elif line == '/change':
+                await self.game_stub.change_game()
+                await asyncio.sleep(1)
+                self.state = self.states[3]
+            elif line == '/exit':
+                self.quit = True
             else:
                 print(f"not a valid message : {line}")

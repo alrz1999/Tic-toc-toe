@@ -29,6 +29,7 @@ class MultiplayerController:
         self.client_by_username = dict()
         self.users = []
         self.loop = asyncio.get_event_loop()
+        self.counter = 0
 
     async def async_handle_multiplayer(self, sock):
         tcp_client = BaseTCPClient("", 12, sock)
@@ -45,6 +46,8 @@ class MultiplayerController:
         while True:
             if self.game is not None:
                 await self.send_game_status(has_new_change)
+                if self.game.has_game_finished():
+                    break
             has_new_change = False
 
             message: BaseMessage = await tcp_client.receive()
@@ -77,11 +80,19 @@ class MultiplayerController:
     async def start_server(self):
         print("server socketserver started")
         tcp_server = BaseTCPServer(SERVER_HOST, SERVER_PORT)
-        while len(self.client_by_username) != 2:
+        tasks = []
+        while self.counter != 2:
             sock, address = await tcp_server.accept()
-            print("socket accepted. current sockets size = ", len(self.client_by_username))
-            self.loop.create_task(self.async_handle_multiplayer(sock))
-            await asyncio.sleep(1)
+            task = self.loop.create_task(self.async_handle_multiplayer(sock))
+            tasks.append(task)
+            self.counter += 1
+
+        print("try to close tcp server")
+        print(tasks)
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
         print("try to close tcp server")
         tcp_server.close()
         print("server socketserver fully initialized")
@@ -142,10 +153,13 @@ class ServerController:
             print("not known game type= ", self.game_type)
 
     async def process_input(self):
+        print("in process_input")
         while True:
             message = await self.tcp_client.receive()
+            print("message received")
             json_content = json_decode(message.content, encoding='utf-8')
-            if json_content['type'] == 'abort':
+            print(json_content)
+            if json_content['type'] == 'change_game':
                 return
 
     async def async_handle_single(self, username):

@@ -31,8 +31,11 @@ class MessageHandler:
             print("game_status = ", game_status)
             print("game_board : ")
             pprint.pprint(game_board, width=13)
-            print('your mark = X')
-            print('opponent mark = O')
+            print(f'your mark = {message["your_mark"]}')
+            op_mark = 1
+            if op_mark == message["your_mark"]:
+                op_mark = 2
+            print(f'opponent mark = {op_mark}')
             if game_status == 'finished':
                 if message['winner'] == 0:
                     print("WITHDRAW".center(40, "*"))

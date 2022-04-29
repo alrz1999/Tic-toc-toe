@@ -36,3 +36,10 @@ class GameStub:
         }
 
         await self.game_client.send(message)
+
+    async def change_game(self):
+        message = {
+            "type": "change_game"
+        }
+
+        await self.game_client.send(message)

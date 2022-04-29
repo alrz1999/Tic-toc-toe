@@ -59,4 +59,7 @@ if __name__ == '__main__':
     try:
         asyncio.run(start_client())
     except KeyboardInterrupt:
-        quit()
+        pass
+    except SystemExit:
+        pass
+

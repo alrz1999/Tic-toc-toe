@@ -78,7 +78,7 @@ class BaseTCPClient:
     async def read_message_content(self, json_header: dict) -> bytes:
         content_length = json_header['content-length']
         raw_data = await self.loop.sock_recv(self.sock, content_length)
-        # print("read_message_content = ", raw_data)
+        print("read_message_content = ", raw_data)
         return raw_data
         # if json_header["content-type"] == "text/json":
         #     encoding = json_header["content-encoding"]
