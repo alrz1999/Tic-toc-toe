@@ -3,6 +3,7 @@ import random
 import logging
 
 import utils
+import webserver_main
 from server.tic_toc_toe import TicTocToe
 from transport.tcp_client import BaseTCPClient, BaseMessage
 from transport.tcp_server import BaseTCPServer
@@ -10,8 +11,8 @@ from transport.tcp_server import BaseTCPServer
 logging.basicConfig(format='%(asctime)s %(lineno)d %(levelname)s:%(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-WEBSERVER_HOST = "127.0.0.1"
-WEBSERVER_PORT = 9090
+WEBSERVER_HOST = webserver_main.WEBSERVER_HOST
+WEBSERVER_PORT = webserver_main.WEBSERVER_GAME_SERVER_PORT
 WEBSERVER_ADDRESS = (WEBSERVER_HOST, WEBSERVER_PORT)
 
 SERVER_HOST = '127.0.0.1'
@@ -227,17 +228,6 @@ async def run_server():
     finally:
         game_server.tcp_server.close()
         master_client.close()
-    # try:
-    #     while True:
-    #         logger.info("ready to get accept clients.")
-    #         message = await master_client.receive()
-    #         json_content = message.content
-    #         if json_content['type'] == 'start_game':
-    #             server_controller = ServerController(master_client, json_content['game_type'])
-    #             await server_controller.handle_messages(json_content['username'])
-    # finally:
-    #     master_client.close()
-
 
 if __name__ == '__main__':
     asyncio.run(run_server())

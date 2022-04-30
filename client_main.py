@@ -1,5 +1,6 @@
 import asyncio
 
+import webserver_main
 from client.game_client import GameClient
 from client.game_controller import MultiPlayerGameController, SinglePlayerGameController, \
     BaseGameController, ExitGameException
@@ -7,8 +8,8 @@ from client.game_stub import GameStub
 from transport.tcp_client import BaseTCPClient, SocketClosedException
 from utils import async_input, wait_until_first_completed
 
-WEBSERVER_HOST = '127.0.0.1'
-WEBSERVER_PORT = 8989
+WEBSERVER_HOST = webserver_main.WEBSERVER_HOST
+WEBSERVER_PORT = webserver_main.WEBSERVER_CLIENT_SERVER_PORT
 WEBSERVER_ADDRESS = (WEBSERVER_HOST, WEBSERVER_PORT)
 
 

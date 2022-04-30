@@ -8,6 +8,10 @@ from transport.tcp_server import BaseTCPServer
 logging.basicConfig(format='%(asctime)s %(lineno)d %(levelname)s:%(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+WEBSERVER_HOST = "127.0.0.1"
+WEBSERVER_GAME_SERVER_PORT = 9090
+WEBSERVER_CLIENT_SERVER_PORT = 8989
+
 
 class ServerSocketHandler:
     def __init__(self, tcp_client: BaseTCPClient, server_address: tuple):
@@ -504,10 +508,9 @@ async def control_console(game_server_socket_server: GameServersSocketServer,
 
 
 async def start_webserver():
-    # TODO: open socket and bind for accepting new clients and new servers
     logger.info('start of start_webserver')
-    game_server_socket_server = GameServersSocketServer('127.0.0.1', 9090)
-    clients_socket_server = ClientsSocketServer('127.0.0.1', 8989, game_server_socket_server)
+    game_server_socket_server = GameServersSocketServer(WEBSERVER_HOST, WEBSERVER_GAME_SERVER_PORT)
+    clients_socket_server = ClientsSocketServer(WEBSERVER_HOST, WEBSERVER_CLIENT_SERVER_PORT, game_server_socket_server)
     await asyncio.gather(*[
         asyncio.create_task(clients_socket_server.accept()),
         asyncio.create_task(game_server_socket_server.accept()),
