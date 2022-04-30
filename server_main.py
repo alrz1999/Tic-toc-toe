@@ -12,7 +12,7 @@ logging.basicConfig(format='%(asctime)s %(lineno)d %(levelname)s:%(message)s', l
 logger = logging.getLogger(__name__)
 
 WEBSERVER_HOST = webserver_main.WEBSERVER_HOST
-WEBSERVER_PORT = webserver_main.WEBSERVER_GAME_SERVER_PORT
+WEBSERVER_PORT = webserver_main.WEBSERVER_GAMESERVER_REPO_PORT
 WEBSERVER_ADDRESS = (WEBSERVER_HOST, WEBSERVER_PORT)
 
 SERVER_HOST = '127.0.0.1'
@@ -162,7 +162,7 @@ class GameServer:
     async def start(self):
         while True:
             tcp_client = await self.tcp_server.accept()
-            self.loop.create_task(tcp_client)
+            self.loop.create_task(self._handle_client(tcp_client))
 
     async def _handle_client(self, tcp_client: BaseTCPClient):
         # TODO: add to connected clients

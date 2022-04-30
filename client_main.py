@@ -9,7 +9,7 @@ from transport.tcp_client import BaseTCPClient, SocketClosedException
 from utils import async_input, wait_until_first_completed
 
 WEBSERVER_HOST = webserver_main.WEBSERVER_HOST
-WEBSERVER_PORT = webserver_main.WEBSERVER_CLIENT_SERVER_PORT
+WEBSERVER_PORT = webserver_main.WEBSERVER_CLIENT_REPO_PORT
 WEBSERVER_ADDRESS = (WEBSERVER_HOST, WEBSERVER_PORT)
 
 
