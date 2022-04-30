@@ -9,6 +9,7 @@ from utils import async_input, wait_until_first_completed
 
 WEBSERVER_HOST = '127.0.0.1'
 WEBSERVER_PORT = 8989
+WEBSERVER_ADDRESS = (WEBSERVER_HOST, WEBSERVER_PORT)
 
 
 async def async_get_username() -> str:
@@ -34,12 +35,12 @@ async def async_control_main_menu(game_stub: GameStub) -> BaseGameController | N
 async def start_client():
     username = await async_get_username()
 
-    tcp_client = BaseTCPClient(WEBSERVER_HOST, WEBSERVER_PORT)
+    tcp_client = BaseTCPClient()
     game_client = GameClient(username, tcp_client)
     game_stub = GameStub(game_client)
 
     try:
-        await tcp_client.connect_with_timeout([1, 3, 10])
+        await tcp_client.connect_with_timeout(WEBSERVER_ADDRESS, [1, 3, 10])
     except ConnectionRefusedError:
         print("Webserver is not available. Try another time.")
         return

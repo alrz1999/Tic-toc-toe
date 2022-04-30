@@ -4,13 +4,14 @@ import random
 from server.tic_toc_toe import TicTocToe
 from transport.tcp_client import BaseTCPClient, BaseMessage
 from transport.tcp_server import BaseTCPServer
-from utils import json_decode, json_encode
 
 WEBSERVER_HOST = "127.0.0.1"
 WEBSERVER_PORT = 9090
+WEBSERVER_ADDRESS = (WEBSERVER_HOST, WEBSERVER_PORT)
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = random.randint(10000, 50000)
+SERVER_ADDRESS = (SERVER_HOST, SERVER_PORT)
 
 
 async def async_handshake(tcp_client: BaseTCPClient):
@@ -19,7 +20,7 @@ async def async_handshake(tcp_client: BaseTCPClient):
         "host": SERVER_HOST,
         "port": SERVER_PORT
     }
-    message = BaseMessage({}, json_encode(content, encoding='utf-8'))
+    message = BaseMessage(content)
     await tcp_client.send(message)
 
 
@@ -31,11 +32,9 @@ class MultiplayerController:
         self.loop = asyncio.get_event_loop()
         self.counter = 0
 
-    async def async_handle_multiplayer(self, sock):
-        tcp_client = BaseTCPClient("", 12, sock)
+    async def async_handle_multiplayer(self, tcp_client: BaseTCPClient):
         start_message = await tcp_client.receive()
-        json_content = json_decode(start_message.content, encoding='utf-8')
-        username = json_content['username']
+        username = start_message.content['username']
         self.client_by_username[username] = tcp_client
         if len(self.users) < 2:
             self.users.append(username)
@@ -51,7 +50,7 @@ class MultiplayerController:
             has_new_change = False
 
             message: BaseMessage = await tcp_client.receive()
-            json_content = json_decode(message.content, encoding='utf-8')
+            json_content = message.content
             message_type = json_content['type']
             message_username = json_content['username']
 
@@ -82,8 +81,8 @@ class MultiplayerController:
         tcp_server = BaseTCPServer(SERVER_HOST, SERVER_PORT)
         tasks = []
         while self.counter != 2:
-            sock, address = await tcp_server.accept()
-            task = self.loop.create_task(self.async_handle_multiplayer(sock))
+            tcp_client: BaseTCPClient = await tcp_server.accept()
+            task = self.loop.create_task(self.async_handle_multiplayer(tcp_client))
             tasks.append(task)
             self.counter += 1
 
@@ -96,7 +95,6 @@ class MultiplayerController:
         print("try to close tcp server")
         tcp_server.close()
         print("server socketserver fully initialized")
-
 
     async def send_game_status(self, has_new_change):
         print("sending game status with ", has_new_change)
@@ -113,7 +111,7 @@ class MultiplayerController:
                     "winner": game.winner
                 }
 
-                base_message = BaseMessage({}, json_encode(server_message, encoding='utf-8'))
+                base_message = BaseMessage(server_message)
                 await self.client_by_username[username].send(base_message)
                 continue
 
@@ -127,7 +125,7 @@ class MultiplayerController:
                     "current_user": game.current_user
                 }
 
-                base_message = BaseMessage({}, json_encode(server_message, encoding='utf-8'))
+                base_message = BaseMessage(server_message)
                 await self.client_by_username[username].send(base_message)
 
 
@@ -143,7 +141,7 @@ class ServerController:
             await self.async_handle_single(starter_username)
         elif self.game_type == 'multi':
             multiplayer_controller = MultiplayerController()
-            tasks = [asyncio.create_task(x) for x in [multiplayer_controller.start_server(),self.process_input()]]
+            tasks = [asyncio.create_task(x) for x in [multiplayer_controller.start_server(), self.process_input()]]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             print(done)
             for task in tasks:
@@ -157,7 +155,7 @@ class ServerController:
         while True:
             message = await self.tcp_client.receive()
             print("message received")
-            json_content = json_decode(message.content, encoding='utf-8')
+            json_content = message.content
             print(json_content)
             if json_content['type'] == 'change_game':
                 return
@@ -179,7 +177,7 @@ class ServerController:
                     "winner": game.winner
                 }
 
-                base_message = BaseMessage({}, json_encode(server_message, encoding='utf-8'))
+                base_message = BaseMessage(server_message)
                 await self.tcp_client.send(base_message)
                 break
 
@@ -193,7 +191,7 @@ class ServerController:
                     "current_user": game.current_user
                 }
 
-                base_message = BaseMessage({}, json_encode(server_message, encoding='utf-8'))
+                base_message = BaseMessage(server_message)
                 await self.tcp_client.send(base_message)
 
                 has_new_change = False
@@ -204,7 +202,7 @@ class ServerController:
                 continue
 
             message: BaseMessage = await self.tcp_client.receive()
-            json_content = json_decode(message.content, encoding='utf-8')
+            json_content = message.content
             message_type = json_content['type']
             message_username = json_content['username']
 
@@ -233,15 +231,19 @@ class ServerController:
 
 
 async def run_server():
-    async with BaseTCPClient(WEBSERVER_HOST, WEBSERVER_PORT) as tcp_client:
+    tcp_client = BaseTCPClient()
+    await tcp_client.connect(WEBSERVER_ADDRESS)
+    try:
         await async_handshake(tcp_client)
         while True:
             print("ready to get new clients.")
             message = await tcp_client.receive()
-            json_content = json_decode(message.content, encoding='utf-8')
+            json_content = message.content
             if json_content['type'] == 'start_game':
                 server_controller = ServerController(tcp_client, json_content['game_type'])
                 await server_controller.handle_messages(json_content['username'])
+    finally:
+        tcp_client.close()
 
 
 if __name__ == '__main__':

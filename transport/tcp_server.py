@@ -1,6 +1,8 @@
 import asyncio
 import socket
 
+from transport.tcp_client import BaseTCPClient
+
 
 class BaseTCPServer:
     def __init__(self, host: str, port: int, backlog=5):
@@ -15,7 +17,7 @@ class BaseTCPServer:
 
     async def accept(self):
         accepted_socket, address = await self.loop.sock_accept(self.sock)
-        return accepted_socket, address
+        return BaseTCPClient(accepted_socket, address)
 
     def close(self):
         self.sock.close()
