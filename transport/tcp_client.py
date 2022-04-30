@@ -50,7 +50,7 @@ class BaseTCPClient:
             await self.loop.sock_sendall(self.sock, message_bytes)
         except:
             raise SocketClosedException("socket is not open. happened in send")
-        print(f"message sended")
+        print(f"message sent")
 
     async def receive(self) -> BaseMessage:
         header_length = await self.read_json_header_length()
@@ -91,6 +91,22 @@ class BaseTCPClient:
         self.sock.setblocking(False)
         await self.loop.sock_connect(self.sock, (self.host, self.port))
         self.is_open = True
+
+    async def connect_with_timeout(self, timeouts: list[int]):
+        try:
+            await self.connect()
+        except ConnectionRefusedError:
+            for timeout in timeouts:
+                try:
+                    print(f"ConnectionRefused. Can not connect to Host. Trying to reconnect after {timeout}s.")
+                    await asyncio.sleep(timeout)
+                    await self.connect()
+                    break
+                except ConnectionRefusedError:
+                    pass
+            else:
+                print("Webserver is not available. Try another time.")
+                raise ConnectionRefusedError
 
     async def is_connected(self):
         return self.is_open

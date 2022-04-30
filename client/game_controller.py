@@ -1,94 +1,124 @@
-import asyncio
-import logging
+import enum
+import pprint
 import re
 
-from client.game_client import GameClient
 from client.game_stub import GameStub
-from transport.tcp_client import SocketClosedException
 from utils import async_input
 
 
-class GameController:
-    def __init__(self, game_client: GameClient):
-        self.game_stub: GameStub = GameStub(game_client)
-        self.states = ['waiting for server', 'waiting for second user', 'playing', 'idle']
-        self.state = self.states[0]
-        self.quit = False
+class ExitGameException(Exception):
+    def __init__(self, message):
+        super(ExitGameException, self).__init__(message)
 
-    async def async_control_main_menu(self):
+
+class GameControllerState(enum.Enum):
+    WAITING_FOR_SERVER = 0
+    PLAYING = 1
+    IDLE = 2
+    WAITING_FOR_SECOND_USER = 3
+
+
+class BaseGameController:
+    def __init__(self, game_stub: GameStub):
+        self.game_stub: GameStub = game_stub
+        self.state = GameControllerState.IDLE
+
+    async def handle_user_input(self):
+        line = str.strip(await async_input("Enter your command\n"))
+        await self._handle_user_command(line)
+
+    async def _handle_user_command(self, command: str):
+        if re.search(r'^(\d+ \d+)$', command) is not None:
+            row, col = map(int, command.split())
+            await self.game_stub.place_mark(row, col)
+        elif command == 'cancel':
+            await self.game_stub.cancel_game()
+        elif command.startswith("chat:"):
+            text_message = command.replace("chat:", '')
+            await self.game_stub.send_message(text_message)
+        elif command == '/exit':
+            raise ExitGameException("exit")
+
+    async def handle_interprocess_communications(self):
         while True:
-            if self.quit:
-                return
-            command = await async_input("Main Menu\n1.Training\n2.Multiplayer\n3.Exit\n")
-            command_lower = command.lower()
-            try:
-                if command_lower in {'1', 'train', 'training', '1.training'}:
-                    await self.async_handle_training()
-                elif command_lower in {'2', 'multi', 'multiplayer', '2.multiplayer'}:
-                    await self.async_handle_multiplayer()
-                elif command_lower in {'3', 'exit', '/exit', '3.exit'}:
-                    return
-                else:
-                    logging.warning(f"Couldn't interpret your input: {command}")
-            except SocketClosedException:
-                self.state = self.states[3]
-                print("Disconnected from webserver")
+            message = await self.game_stub.game_client.receive()
+            self._handle_message(message)
 
-    async def async_handle_training(self):
-        self.state = self.states[0]
+    def _handle_message(self, message):
+        message_type = message['type']
+
+        if message_type == 'server_assigned':
+            game_type = message.get("game_type")
+            if game_type == 'multi':
+                self.state = GameControllerState.WAITING_FOR_SECOND_USER
+            else:
+                self.state = GameControllerState.PLAYING
+        elif message_type == 'show_game_status':
+            self.state = GameControllerState.PLAYING
+            game_status = message['game_status']
+            game_board = message['game_board']
+            print("game_status = ", game_status)
+            print("game_board : ")
+            pprint.pprint(game_board, width=13)
+            print(f'your mark = {message["your_mark"]}')
+            op_mark = 1
+            if op_mark == message["your_mark"]:
+                op_mark = 2
+            print(f'opponent mark = {op_mark}')
+            if game_status == 'finished':
+                if message['winner'] == 0:
+                    print("WITHDRAW".center(40, "*"))
+                elif message['winner'] == message['your_mark']:
+                    print("YOU WIN".center(40, "*"))
+                else:
+                    print("YOU LOSE".center(40, "*"))
+                self.state = GameControllerState.IDLE
+            else:
+                print('is your turn= ', message['current_user'] == message['your_mark'])
+        elif message_type == 'server_crashed':
+            print("Server crashed. Press Enter to return to Main menu")
+            self.state = GameControllerState.IDLE
+        elif message_type == "chat":
+            print("Start of Chat Message".center(40, "#"))
+            print(message['text_message'])
+            print("End of Chat Message".center(40, "#"))
+
+
+class SinglePlayerGameController(BaseGameController):
+    def __init__(self, game_stub: GameStub):
+        super().__init__(game_stub)
+
+    async def handle_user_input(self):
+        self.state = GameControllerState.WAITING_FOR_SERVER
         await self.game_stub.start_game("single")
 
-        while self.state != self.states[3]:
-            if self.quit:
-                return
+        while self.state != GameControllerState.IDLE:
+            print(" Single Player Menu ".center(40, "*"))
+            if self.state == GameControllerState.WAITING_FOR_SERVER:
+                print(" Waiting for a free server to start game... ".center(40, "#"))
 
-            if self.state == self.states[0]:
-                print("Training Menu\nWaiting for a free server to start game...\n")
-            line = await async_input("Enter your command\n")
+            await super().handle_user_input()
 
-            if re.search(r'\d+ \d+', line) is not None:
-                row, col = map(int, line.split())
-                await self.game_stub.place_mark(row, col)
-            elif line == 'cancel':
-                await self.game_stub.cancel_game()
-            elif len(line) == 0:
-                continue
-            elif line.startswith("chat:"):
-                text_message = line.replace("chat:", '')
-                await self.game_stub.send_message(text_message)
-            elif line == '/exit':
-                self.quit = True
-            else:
-                print(f"not a valid message : {line}")
 
-    async def async_handle_multiplayer(self):
-        self.state = self.states[0]
+class MultiPlayerGameController(BaseGameController):
+    def __init__(self, game_stub: GameStub):
+        super().__init__(game_stub)
+
+    async def handle_user_input(self):
+        self.state = GameControllerState.WAITING_FOR_SERVER
         await self.game_stub.start_game("multi")
 
-        while self.state != self.states[3]:
-            if self.quit:
-                return
-            if self.state == self.states[0]:
-                print("Waiting for a free server to start game...\n")
-            if self.state == self.states[1]:
-                print("Waiting for second player...\n")
-            line = await async_input("Enter your command\n")
+        while self.state != GameControllerState.IDLE:
+            print(" Multi Player Menu ".center(40, "*"))
+            if self.state == GameControllerState.WAITING_FOR_SERVER:
+                print(" Waiting for a free server to start game... ".center(40, "#"))
+            elif self.state == GameControllerState.WAITING_FOR_SECOND_USER:
+                print(" Waiting for second player... ".center(40, "#"))
 
-            if re.search(r'\d+ \d+', line) is not None:
-                row, col = map(int, line.split())
-                await self.game_stub.place_mark(row, col)
-            elif line == 'cancel':
-                await self.game_stub.cancel_game()
-            elif len(line) == 0:
-                continue
-            elif line.startswith("chat:"):
-                text_message = line.replace("chat:", '')
-                await self.game_stub.send_message(text_message)
-            elif line == '/change':
-                await self.game_stub.change_game()
-                await asyncio.sleep(1)
-                self.state = self.states[3]
-            elif line == '/exit':
-                self.quit = True
-            else:
-                print(f"not a valid message : {line}")
+            await super(MultiPlayerGameController, self).handle_user_input()
+
+    async def _handle_user_command(self, command: str):
+        await super(MultiPlayerGameController, self)._handle_user_command(command)
+        if command == '/change':
+            await self.game_stub.change_game()
+            self.state = GameControllerState.IDLE
