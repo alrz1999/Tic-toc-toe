@@ -2,13 +2,9 @@ import enum
 import pprint
 import re
 
+from client.exceptions import ExitGameException
 from client.game_stub import GameStub
 from utils import async_input
-
-
-class ExitGameException(Exception):
-    def __init__(self, message):
-        super(ExitGameException, self).__init__(message)
 
 
 class GameControllerState(enum.Enum):
