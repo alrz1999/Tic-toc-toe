@@ -82,6 +82,9 @@ class BaseGameController:
             print("Start of Chat Message".center(40, "#"))
             print(message['text_message'])
             print("End of Chat Message".center(40, "#"))
+        elif message_type == "opponent_escaped":
+            print(" Opponent has been disconnected ".center(40, "!"))
+            self.state = GameControllerState.IDLE
 
 
 class SinglePlayerGameController(BaseGameController):

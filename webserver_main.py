@@ -19,7 +19,6 @@ WEBSERVER_CLIENT_REPO_PORT = 8989
 class ChatRoom:
     def __init__(self, server_address: tuple):
         self.server_address = server_address
-        self.tasks = []
         self.room_id = str(uuid.uuid1())
 
     async def add_client(self, client_tcp_client: BaseTCPClient, start_message: BaseMessage = None):
@@ -30,10 +29,8 @@ class ChatRoom:
         task = None
         try:
             task = asyncio.create_task(bridge.run_full_duplex())
-            self.tasks.append(task)
             await task
         except ClientConnectionException:
-            self.tasks.remove(task)
             raise
         finally:
             server_client.close()
@@ -261,7 +258,7 @@ class ClientHandler:
             message = await tcp_client.receive()
             message_type = message.content["type"]
             if message_type == "change_game":
-                raise ChangeGameException
+                raise ChangeGameException("change_game requested")
 
 
 class ClientRepository:

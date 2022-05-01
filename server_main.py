@@ -142,6 +142,7 @@ class MultiPlayerGame(Game):
         self.abort_game = False
 
     async def handle_client(self, tcp_client: BaseTCPClient, username: str):
+        self.has_new_change = True
         self.clients_by_username[username] = tcp_client
 
         if self.user2 is None:
@@ -168,7 +169,7 @@ class GameServer:
         self.loop = asyncio.get_event_loop()
         self.multi_player_game: MultiPlayerGame = None
         self.single_player_game: SinglePlayerGame = None
-        self.reconnect_task_by_username :dict[str:Task] = dict()
+        self.reconnect_task_by_username: dict[str:Task] = dict()
 
     async def start(self):
         while True:
@@ -199,9 +200,17 @@ class GameServer:
                             reconnected: bool = await reconnect_task
                             if reconnected:
                                 return
+                            for user, client in game.clients_by_username.items():
+                                opponent_disconnected_message = {
+                                    "type": "opponent_escaped",
+                                    "game_status": "finished"
+                                }
+                                await client.send(BaseMessage(opponent_disconnected_message))
+                                # client.close()
                         except asyncio.exceptions.CancelledError:
                             return
-
+                        except SocketClosedException:
+                            pass
 
                 free_message = {
                     "type": "put_to_free"
@@ -247,7 +256,8 @@ class GameServer:
                 }
                 await self.master_client.send(BaseMessage(multi_free_message))
                 server_assigned_message = {
-                    "type": "server_assigned"
+                    "type": "server_assigned",
+                    "game_type": "multi"
                 }
                 await tcp_client.send(BaseMessage(server_assigned_message))
                 remain_in_game = await utils.wait_until_first_completed(tasks)
@@ -293,7 +303,7 @@ if __name__ == '__main__':
     asyncio.run(run_server())
 
 
-def test_game():
+def test_tic_toc_toe():
     a = 'a'
     b = 'b'
     tic = TicTocToe(a, b)
