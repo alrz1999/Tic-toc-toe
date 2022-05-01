@@ -3,7 +3,6 @@ import logging
 import uuid
 
 from transport.tcp_client import BaseTCPClient, BaseMessage
-from transport.tcp_server import BaseTCPServer
 from webserver.bridge import Bridge
 from webserver.exceptions import ClientConnectionException
 
@@ -31,9 +30,7 @@ class ChatRoom:
 
 
 class ChatroomRepository:
-    def __init__(self, host, port):
-        self.tcp_server = BaseTCPServer(host, port, backlog=5)
-        self.loop = asyncio.get_event_loop()
+    def __init__(self):
         self.all_chat_rooms: dict[str:ChatRoom] = dict()
         self.free_chat_rooms: dict[str:ChatRoom] = dict()
         self.free_multiplayer_chatrooms: dict[str:ChatRoom] = dict()

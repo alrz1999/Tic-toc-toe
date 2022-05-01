@@ -1,10 +1,16 @@
 import logging
+import enum
 
 from transport.tcp_client import BaseTCPClient, BaseMessage, SocketClosedException
 from webserver.chatroom import ChatRoom, ChatroomRepository
 
 logging.basicConfig(format='%(asctime)s %(lineno)d %(levelname)s:%(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+
+class GameServerHandlerState(enum.Enum):
+    CONNECTED = 0
+    DISCONNECTED = 1
 
 
 class GameServerHandler:
@@ -14,9 +20,10 @@ class GameServerHandler:
         self.chatroom = ChatRoom(self.server_address)
         self.chatroom_repo = chatroom_repo
         self.chatroom_repo.add_chatroom(self.chatroom)
+        self.state = GameServerHandlerState.DISCONNECTED
 
     async def handle_gameserver(self):
-        # TODO add to list of available gameservers
+        self.state = GameServerHandlerState.CONNECTED
         try:
             while True:
                 message: BaseMessage = await self.tcp_client.receive()
@@ -25,7 +32,7 @@ class GameServerHandler:
             logger.info("A gameserver disconnected")
         finally:
             self.chatroom_repo.remove_chatroom(self.chatroom)
-        # TODO remove from list of available gameservers
+            self.state = GameServerHandlerState.DISCONNECTED
 
     async def _handle_gameserver_message(self, message: BaseMessage):
         json_content = message.content
