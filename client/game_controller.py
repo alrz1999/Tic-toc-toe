@@ -50,6 +50,7 @@ class BaseGameController:
         if message_type == 'server_assigned':
             game_type = message.get("game_type")
             if game_type == 'multi':
+                print(" A free server has been found ".center(40, "*"))
                 self.state = GameControllerState.WAITING_FOR_SECOND_USER
             else:
                 self.state = GameControllerState.PLAYING
@@ -84,6 +85,7 @@ class BaseGameController:
             print("End of Chat Message".center(40, "#"))
         elif message_type == "opponent_escaped":
             print(" Opponent has been disconnected ".center(40, "!"))
+            print(" Press Enter to go Main Menu ".center(40, "*"))
             self.state = GameControllerState.IDLE
 
 

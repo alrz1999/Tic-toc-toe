@@ -43,12 +43,13 @@ class Game:
     async def handle_client(self, tcp_client: BaseTCPClient, username: str):
         pass
 
-    async def _handle_client_message(self, message: dict, username: str):
-        message_type = message['type']
-        message_username = message['username']
+    async def _handle_client_message(self, message: BaseMessage, username: str):
+        json_content: dict = message.content
+        message_type = json_content['type']
+        message_username = json_content['username']
 
         if message_type == 'place_mark':
-            row, col = message['row'], message['col']
+            row, col = json_content['row'], json_content['col']
             try:
                 self.game.place_mark(message_username, row, col)
                 self.has_new_change = True
@@ -61,7 +62,7 @@ class Game:
             self.has_new_change = True
         elif message_type == "chat":
             print("Start of Chat Message".center(40, "#"))
-            print(message['text_message'])
+            print(json_content['text_message'])
             for key, val in self.clients_by_username.items():
                 if key != username:
                     await val.send(message)
@@ -118,7 +119,7 @@ class SinglePlayerGame(Game):
             if self.try_place_computer_mark():
                 continue
             message = await tcp_client.receive()
-            await self._handle_client_message(message.content, username)
+            await self._handle_client_message(message, username)
 
     def try_place_computer_mark(self):
         if self.game.get_game_userid("computer") != self.game.current_user:
@@ -153,7 +154,7 @@ class MultiPlayerGame(Game):
             if self.game.has_game_finished():
                 break
             message = await tcp_client.receive()
-            await self._handle_client_message(message.content, username)
+            await self._handle_client_message(message, username)
 
     def initialize_game(self, user2):
         self.user2 = user2
@@ -206,7 +207,6 @@ class GameServer:
                                     "game_status": "finished"
                                 }
                                 await client.send(BaseMessage(opponent_disconnected_message))
-                                # client.close()
                         except asyncio.exceptions.CancelledError:
                             return
                         except SocketClosedException:
@@ -263,6 +263,12 @@ class GameServer:
                 remain_in_game = await utils.wait_until_first_completed(tasks)
                 if remain_in_game:
                     return self.multi_player_game
+
+                changed_message = {
+                    "type": "game_changed",
+                    "game_status": "finished"
+                }
+                await tcp_client.send(BaseMessage(changed_message))
             except SocketClosedException:
                 pass
             return None

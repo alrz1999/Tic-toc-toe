@@ -26,7 +26,6 @@ class ChatRoom:
         await server_client.connect(self.server_address)
         await server_client.send(start_message)
         bridge = Bridge(server_client, client_tcp_client)
-        task = None
         try:
             task = asyncio.create_task(bridge.run_full_duplex())
             await task
@@ -134,7 +133,7 @@ class ClientConnectionException(Exception):
 
 class ChangeGameException(Exception):
     def __init__(self, message):
-        super(ChangeGameException, self).__init__(message)
+        super().__init__(message)
 
 
 class Bridge:
@@ -241,15 +240,12 @@ class ClientHandler:
 
         try:
             await chatroom.add_client(tcp_client, start_message)
-            self.chatroom_repo.free_chat_rooms[chatroom.room_id] = chatroom
         except ServerConnectionException:
-            self.chatroom_repo.remove_chatroom(chatroom)
             server_crashed_message = {
                 "type": "server_crashed"
             }
             await tcp_client.send(BaseMessage(server_crashed_message))
         except ClientConnectionException:
-            self.chatroom_repo.waiting_chatrooms_by_username[username] = chatroom
             raise
 
 
