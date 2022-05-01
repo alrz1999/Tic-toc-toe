@@ -122,7 +122,8 @@ class SinglePlayerGame(Game):
             for j in range(3):
                 if self.game.board[i][j] == 0:
                     self.game.place_mark("computer", i, j)
-                    return
+                    self.has_new_change = True
+                    return True
 
 
 class MultiPlayerGame(Game):

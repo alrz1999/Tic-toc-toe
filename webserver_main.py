@@ -2,6 +2,7 @@ import asyncio
 import logging
 import enum
 
+import utils
 from utils import async_input
 from transport.tcp_client import BaseTCPClient, BaseMessage, SocketClosedException
 from transport.tcp_server import BaseTCPServer
@@ -22,7 +23,7 @@ class GameServerHandler:
         self.states = ['unallocated', 'allocated', 'mid-allocated', 'disconnected', 'waiting']
         self.state = self.states[0]
 
-    async def handle_unmanaged_socket(self, tcp_client: BaseTCPClient):
+    async def handle_gameserver(self, tcp_client: BaseTCPClient):
         pass
         # tcp_client = BaseTCPClient(address[0], address[1], sock)
         # while True:
@@ -52,6 +53,11 @@ class ServerConnectionException(Exception):
 class ClientConnectionException(Exception):
     def __init__(self, message):
         super().__init__(message)
+
+
+class ChangeGameException(Exception):
+    def __init__(self, message):
+        super(ChangeGameException, self).__init__(message)
 
 
 class Bridge:
@@ -136,6 +142,7 @@ class ChatRoom:
             self.tasks.remove(task)
             raise
 
+
 class GameServerRepository:
     def __init__(self, host, port):
         self.tcp_server = BaseTCPServer(host, port, backlog=5)
@@ -147,7 +154,7 @@ class GameServerRepository:
 
     def pop_waiting_gameserver_handler(self, username) -> GameServerHandler | None:
         if username in self.waiting_gameserver_handlers_by_username:
-            print("poped from waiting sockets")
+            print("popped from waiting sockets")
             return self.waiting_gameserver_handlers_by_username.pop(username)
         return None
 
@@ -207,6 +214,7 @@ class ClientHandler:
                         is_single_player_game = json_content['game_type'] == "single"
                         await self.handle_game(tcp_client, message, is_single_player_game)
                     except ClientConnectionException:
+                        print("clientConnectionException")
                         break
                     except SocketClosedException:
                         print("unhandled socketClosedException in handle unmanaged Socket for client")
@@ -217,7 +225,7 @@ class ClientHandler:
                 break
         self.state = ClientHandlerState.DISCONNECTED
 
-    async def handle_game(self, tcp_client: BaseTCPClient, start_message: BaseMessage, is_single_player_game:bool):
+    async def handle_game(self, tcp_client: BaseTCPClient, start_message: BaseMessage, is_single_player_game: bool):
         while True:
             username = start_message.content['username']
             waiting_gameserver_handler = self.gameserver_repo.pop_waiting_gameserver_handler(username)
@@ -225,7 +233,16 @@ class ClientHandler:
             if waiting_gameserver_handler:
                 gameserver_handler = waiting_gameserver_handler
             else:
-                gameserver_handler = await self.gameserver_repo.pop_free_gameserver_handler(is_single_player_game)
+                try:
+                    tasks = [asyncio.create_task(x) for x in
+                             [self.gameserver_repo.pop_free_gameserver_handler(is_single_player_game),
+                              self._handle_waiting_user_commands(tcp_client)]]
+                    gameserver_handler = await utils.wait_until_first_completed(tasks)
+                except ChangeGameException:
+                    break
+                except ClientConnectionException:
+                    raise
+
 
             try:
                 await gameserver_handler.chatroom.add_client(tcp_client, start_message)
@@ -243,6 +260,13 @@ class ClientHandler:
             self.gameserver_repo.free_gameserver_handlers.append(gameserver_handler)
             break
 
+    async def _handle_waiting_user_commands(self, tcp_client: BaseTCPClient):
+        while True:
+            message = await tcp_client.receive()
+            message_type = message.content["type"]
+            if message_type == "change_game":
+                raise ChangeGameException
+
 
 class ClientRepository:
     def __init__(self, host, port):
@@ -251,7 +275,7 @@ class ClientRepository:
         self.client_handlers = []
 
     def get_number_of_connected_clients(self):
-        self.client_handlers = [x for x in self.client_handlers if x.state != x.states[1]]
+        self.client_handlers = [x for x in self.client_handlers if x.state == ClientHandlerState.CONNECTED]
         return len(self.client_handlers)
 
 
@@ -286,7 +310,7 @@ class WebServer:
             self.game_server_repo.all_gameserver_handlers.append(server_socket_handler)
             self.game_server_repo.free_gameserver_handlers.append(server_socket_handler)
 
-            self.game_server_repo.loop.create_task(server_socket_handler.handle_unmanaged_socket(tcp_client))
+            self.game_server_repo.loop.create_task(server_socket_handler.handle_gameserver(tcp_client))
 
 
 async def control_console(game_server_socket_server: GameServerRepository,
