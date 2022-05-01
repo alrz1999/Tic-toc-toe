@@ -1,11 +1,12 @@
 import asyncio
 import random
 import logging
+from asyncio import Task
 
 import utils
 import webserver_main
 from server.tic_toc_toe import TicTocToe
-from transport.tcp_client import BaseTCPClient, BaseMessage
+from transport.tcp_client import BaseTCPClient, BaseMessage, SocketClosedException
 from transport.tcp_server import BaseTCPServer
 
 logging.basicConfig(format='%(asctime)s %(lineno)d %(levelname)s:%(message)s', level=logging.DEBUG)
@@ -38,6 +39,9 @@ class Game:
         self.clients_by_username: dict[str:BaseTCPClient] = dict()
         self.has_new_change = True
         self.abort_game = False
+
+    async def handle_client(self, tcp_client: BaseTCPClient, username: str):
+        pass
 
     async def _handle_client_message(self, message: dict, username: str):
         message_type = message['type']
@@ -104,6 +108,7 @@ class SinglePlayerGame(Game):
         self.loop = asyncio.get_event_loop()
 
     async def handle_client(self, tcp_client: BaseTCPClient, username: str):
+        self.has_new_change = True
         self.clients_by_username[username] = tcp_client
 
         while True:
@@ -131,13 +136,16 @@ class MultiPlayerGame(Game):
         self.loop = asyncio.get_event_loop()
         self.user1 = user1
         self.user2 = None
-        # self.game = TicTocToe(user1, user2)
+        self.game = None
         self.clients_by_username: dict[str:BaseTCPClient] = dict()
         self.has_new_change = True
         self.abort_game = False
 
     async def handle_client(self, tcp_client: BaseTCPClient, username: str):
         self.clients_by_username[username] = tcp_client
+
+        if self.user2 is None:
+            self.initialize_game(username)
 
         while True:
             await self.send_game_status()
@@ -146,7 +154,7 @@ class MultiPlayerGame(Game):
             message = await tcp_client.receive()
             await self._handle_client_message(message.content, username)
 
-    def set_second_user(self, user2):
+    def initialize_game(self, user2):
         self.user2 = user2
         self.game = TicTocToe(self.user1, self.user2)
         self.has_new_change = True
@@ -159,6 +167,8 @@ class GameServer:
         self.tcp_server: BaseTCPServer = BaseTCPServer(host, port)
         self.loop = asyncio.get_event_loop()
         self.multi_player_game: MultiPlayerGame = None
+        self.single_player_game: SinglePlayerGame = None
+        self.reconnect_task_by_username :dict[str:Task] = dict()
 
     async def start(self):
         while True:
@@ -167,45 +177,88 @@ class GameServer:
 
     async def _handle_client(self, tcp_client: BaseTCPClient):
         # TODO: add to connected clients
-        while True:
-            message: BaseMessage = await tcp_client.receive()
-            json_content = message.content
-            username = json_content['username']
+        try:
+            start_message: BaseMessage = await tcp_client.receive()
+            start_content = start_message.content
+            username = start_content['username']
+            message_type = start_content['type']
 
-            if json_content['type'] == 'start_game':
-                if json_content['game_type'] == "single":
-                    single_player_game = SinglePlayerGame(username)
-                    await single_player_game.handle_client(tcp_client, username)
-                elif json_content['game_type'] == "multi":
-                    if self.multi_player_game is None:
-                        self.multi_player_game = MultiPlayerGame(username)
-                        tasks = [asyncio.create_task(x) for x in
-                                 [self._check_multi_player_game(), self._handle_waiting_user_commands(tcp_client)]]
+            reconnect_task: Task = self.reconnect_task_by_username.pop(username, None)
+            if reconnect_task is not None:
+                reconnect_task.cancel()
+
+            if message_type == 'start_game':
+                game: Game = await self.get_game(tcp_client, username, start_content['game_type'])
+                if game is not None:
+                    try:
+                        await game.handle_client(tcp_client, username)
+                    except SocketClosedException:
                         try:
-                            result = await utils.wait_until_first_completed(tasks)
-                            if not result:
-                                await self.cancel_multi_player_game()
-                                break
-                        except:
-                            await self.cancel_multi_player_game()
-                            break
-                    else:
-                        self.multi_player_game.set_second_user(username)
-                        await self.multi_player_game.handle_client(tcp_client, username)
-                else:
-                    break
+                            reconnect_task = asyncio.create_task(self._has_client_reconnected(game, username))
+                            self.reconnect_task_by_username[username] = reconnect_task
+                            reconnected: bool = await reconnect_task
+                            if reconnected:
+                                return
+                        except asyncio.exceptions.CancelledError:
+                            return
 
+
+                free_message = {
+                    "type": "put_to_free"
+                }
+                await self.master_client.send(BaseMessage(free_message))
+                self.single_player_game = None
+                self.multi_player_game = None
+        finally:
+            tcp_client.close()
         # TODO: remove from connected clients
 
-    async def cancel_multi_player_game(self):
-        self.multi_player_game = None
-        cancel_multi_player_message = {
-            "type": "cancel_game",
-            "game_type": "multi"
-        }
-        await self.master_client.send(BaseMessage(cancel_multi_player_message))
+    async def _has_client_reconnected(self, game, username) -> bool:
+        if game.game.has_game_finished() or game.abort_game:
+            return False
 
-    async def _check_multi_player_game(self):
+        wait_message = {
+            "type": "put_to_waiting",
+            "username": username
+        }
+        await self.master_client.send(BaseMessage(wait_message))
+        reconnected = await self.wait_for_user_reconnect(game, username, 10)
+        return reconnected
+
+    async def get_game(self, tcp_client: BaseTCPClient, username: str, game_type: str) -> Game | None:
+        if game_type == "single":
+            return await self.get_single_player_game(username)
+        return await self.get_multiplayer_game(tcp_client, username)
+
+    async def get_single_player_game(self, username) -> SinglePlayerGame:
+        if self.single_player_game is None:
+            self.single_player_game = SinglePlayerGame(username)
+        return self.single_player_game
+
+    async def get_multiplayer_game(self, tcp_client: BaseTCPClient, username: str) -> MultiPlayerGame | None:
+        if self.multi_player_game is None:
+            self.multi_player_game = MultiPlayerGame(username)
+            self.multi_player_game.clients_by_username[username] = tcp_client
+            tasks = [asyncio.create_task(x) for x in
+                     [self._check_multi_player_game_started(), self._handle_waiting_user_commands(tcp_client)]]
+            try:
+                multi_free_message = {
+                    "type": "put_to_multi_free"
+                }
+                await self.master_client.send(BaseMessage(multi_free_message))
+                server_assigned_message = {
+                    "type": "server_assigned"
+                }
+                await tcp_client.send(BaseMessage(server_assigned_message))
+                remain_in_game = await utils.wait_until_first_completed(tasks)
+                if remain_in_game:
+                    return self.multi_player_game
+            except SocketClosedException:
+                pass
+            return None
+        return self.multi_player_game
+
+    async def _check_multi_player_game_started(self):
         while True:
             if self.multi_player_game.game is not None:
                 return True
@@ -218,6 +271,11 @@ class GameServer:
             if message_type == "change_game":
                 return False
 
+    async def wait_for_user_reconnect(self, game: Game, username: str, wait_time: int) -> bool:
+        game.clients_by_username.pop(username)
+        await asyncio.sleep(wait_time)
+        return username in game.clients_by_username
+
 
 async def run_server():
     master_client = BaseTCPClient()
@@ -229,6 +287,7 @@ async def run_server():
     finally:
         game_server.tcp_server.close()
         master_client.close()
+
 
 if __name__ == '__main__':
     asyncio.run(run_server())

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import enum
+import uuid
 
 import utils
 from utils import async_input
@@ -15,34 +16,113 @@ WEBSERVER_GAMESERVER_REPO_PORT = 9090
 WEBSERVER_CLIENT_REPO_PORT = 8989
 
 
+class ChatRoom:
+    def __init__(self, server_address: tuple):
+        self.server_address = server_address
+        self.tasks = []
+        self.room_id = str(uuid.uuid1())
+
+    async def add_client(self, client_tcp_client: BaseTCPClient, start_message: BaseMessage = None):
+        server_client = BaseTCPClient()
+        await server_client.connect(self.server_address)
+        await server_client.send(start_message)
+        bridge = Bridge(server_client, client_tcp_client)
+        task = None
+        try:
+            task = asyncio.create_task(bridge.run_full_duplex())
+            self.tasks.append(task)
+            await task
+        except ClientConnectionException:
+            self.tasks.remove(task)
+            raise
+        finally:
+            server_client.close()
+
+
+class ChatroomRepository:
+    def __init__(self, host, port):
+        self.tcp_server = BaseTCPServer(host, port, backlog=5)
+        self.loop = asyncio.get_event_loop()
+        self.all_chat_rooms: dict[str:ChatRoom] = dict()
+        self.free_chat_rooms: dict[str:ChatRoom] = dict()
+        self.free_multiplayer_chatrooms: dict[str:ChatRoom] = dict()
+        self.waiting_chatrooms_by_username: dict[str: ChatRoom] = dict()
+
+    def add_chatroom(self, chatroom: ChatRoom):
+        self.free_chat_rooms[chatroom.room_id] = chatroom
+        self.all_chat_rooms[chatroom.room_id] = chatroom
+
+    def remove_chatroom(self, chatroom: ChatRoom):
+        self.all_chat_rooms.pop(chatroom.room_id, None)
+        self.remove_from_free_chatrooms(chatroom)
+        self.remove_from_multiplayer_chatrooms(chatroom)
+        self.remove_from_waiting_chatrooms(chatroom)
+
+    def remove_from_waiting_chatrooms(self, chatroom):
+        self.waiting_chatrooms_by_username = {k: v for k, v in self.waiting_chatrooms_by_username.items() if
+                                              v != chatroom}
+
+    def remove_from_multiplayer_chatrooms(self, chatroom):
+        self.free_multiplayer_chatrooms.pop(chatroom.room_id, None)
+
+    def remove_from_free_chatrooms(self, chatroom):
+        self.free_chat_rooms.pop(chatroom.room_id, None)
+
+    def pop_waiting_chatroom(self, username) -> ChatRoom | None:
+        if username in self.waiting_chatrooms_by_username:
+            print("popped from waiting sockets")
+            return self.waiting_chatrooms_by_username.pop(username)
+        return None
+
+    async def pop_free_chatroom(self, single_player: bool) -> ChatRoom:
+        while True:
+            try:
+                if single_player or len(self.free_multiplayer_chatrooms) == 0:
+                    return self.free_chat_rooms.popitem()[1]
+                else:
+                    return self.free_multiplayer_chatrooms.popitem()[1]
+            except KeyError:
+                await asyncio.sleep(1)
+
+
 class GameServerHandler:
-    def __init__(self, tcp_client: BaseTCPClient, server_address: tuple):
+    def __init__(self, tcp_client: BaseTCPClient, server_address: tuple, chatroom_repo: ChatroomRepository):
         self.tcp_client: BaseTCPClient = tcp_client
         self.server_address: tuple = server_address
         self.chatroom = ChatRoom(self.server_address)
-        self.states = ['unallocated', 'allocated', 'mid-allocated', 'disconnected', 'waiting']
-        self.state = self.states[0]
+        self.chatroom_repo = chatroom_repo
+        self.chatroom_repo.add_chatroom(self.chatroom)
 
-    async def handle_gameserver(self, tcp_client: BaseTCPClient):
-        pass
-        # tcp_client = BaseTCPClient(address[0], address[1], sock)
-        # while True:
-        #     if self.state != self.states[0]:
-        #         await asyncio.sleep(1)
-        #         continue
-        #     await asyncio.sleep(5)
-        #     try:
-        #         message: BaseMessage = await asyncio.wait_for(tcp_client.receive(), 5)
-        #         json_content = json_decode(message.content, 'utf-8')
-        #         if json_content['type'] == 'start_single':
-        #             pass
-        #         elif json_content['type'] == 'start_multiplayer':
-        #             pass
-        #         else:
-        #             logger.debug("Unknown message content= ", json_content)
-        #     except:
-        #         print('waweil;a')
-        #         pass
+    async def handle_gameserver(self):
+        # TODO add to list of available gameservers
+        try:
+            while True:
+                message: BaseMessage = await self.tcp_client.receive()
+                await self._handle_gameserver_message(message)
+        except SocketClosedException:
+            logger.info("A gameserver disconnected")
+        finally:
+            self.chatroom_repo.remove_chatroom(self.chatroom)
+        # TODO remove from list of available gameservers
+
+    async def _handle_gameserver_message(self, message: BaseMessage):
+        json_content = message.content
+        message_type = json_content['type']
+        if message_type == "put_to_free":
+            self.chatroom_repo.free_chat_rooms[self.chatroom.room_id] = self.chatroom
+            self.chatroom_repo.remove_from_multiplayer_chatrooms(self.chatroom)
+            self.chatroom_repo.remove_from_waiting_chatrooms(self.chatroom)
+        elif message_type == "put_to_waiting":
+            username = json_content['username']
+            self.chatroom_repo.waiting_chatrooms_by_username[username] = self.chatroom
+            self.chatroom_repo.remove_from_free_chatrooms(self.chatroom)
+            self.chatroom_repo.remove_from_multiplayer_chatrooms(self.chatroom)
+        elif message_type == "put_to_multi_free":
+            self.chatroom_repo.free_multiplayer_chatrooms[self.chatroom.room_id] = self.chatroom
+            self.chatroom_repo.remove_from_free_chatrooms(self.chatroom)
+            self.chatroom_repo.remove_from_waiting_chatrooms(self.chatroom)
+        else:
+            logger.warning(f"unknown message type in gameserver handler: {message_type}")
 
 
 class ServerConnectionException(Exception):
@@ -61,9 +141,9 @@ class ChangeGameException(Exception):
 
 
 class Bridge:
-    def __init__(self, server, client):
-        self.server = server
-        self.client = client
+    def __init__(self, server: BaseTCPClient, client: BaseTCPClient):
+        self.server: BaseTCPClient = server
+        self.client: BaseTCPClient = client
         self.quit = False
 
     async def run_full_duplex(self):
@@ -72,17 +152,10 @@ class Bridge:
             asyncio.create_task(self.forward_from_client_to_server())
         ]
         try:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            feature, = done
-            feature.result()
+            await utils.wait_until_first_completed(tasks)
         except SocketClosedException:
             print('socket closed exception caught in Bridge.')
             raise
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-                    print(f"task = {task.get_name()} cancelled.")
 
     async def forward_from_server_to_client(self):
         message: BaseMessage
@@ -121,86 +194,15 @@ class Bridge:
                 raise ServerConnectionException("error")
 
 
-class ChatRoom:
-    def __init__(self, server_address: tuple):
-        self.server_address = server_address
-        self.tasks = []
-        self.counter = 0
-
-    async def add_client(self, client_tcp_client: BaseTCPClient, start_message: BaseMessage = None):
-        server_client = BaseTCPClient()
-        await server_client.connect(self.server_address)
-        await server_client.send(start_message)
-        bridge = Bridge(server_client, client_tcp_client)
-        self.counter += 1
-        task = None
-        try:
-            task = asyncio.create_task(bridge.run_full_duplex())
-            self.tasks.append(task)
-            await task
-        except ClientConnectionException:
-            self.tasks.remove(task)
-            raise
-
-
-class GameServerRepository:
-    def __init__(self, host, port):
-        self.tcp_server = BaseTCPServer(host, port, backlog=5)
-        self.loop = asyncio.get_event_loop()
-        self.all_gameserver_handlers: list[GameServerHandler] = []
-        self.free_gameserver_handlers: list[GameServerHandler] = []
-        self.free_multiplayer_gameserver_handler: list[GameServerHandler] = []
-        self.waiting_gameserver_handlers_by_username: dict[str: GameServerHandler] = dict()
-
-    def pop_waiting_gameserver_handler(self, username) -> GameServerHandler | None:
-        if username in self.waiting_gameserver_handlers_by_username:
-            print("popped from waiting sockets")
-            return self.waiting_gameserver_handlers_by_username.pop(username)
-        return None
-
-    async def pop_free_gameserver_handler(self, single_player: bool) -> GameServerHandler:
-        while True:
-            try:
-                if single_player:
-                    return self.free_gameserver_handlers.pop()
-                else:
-                    return self.free_multiplayer_gameserver_handler.pop()
-            except IndexError:
-                await asyncio.sleep(1)
-
-    def move_to_waiting(self, username, gameserver_handler: GameServerHandler):
-        gameserver_handler.state = gameserver_handler.states[4]
-        self.waiting_gameserver_handlers_by_username[username] = gameserver_handler
-        self.loop.create_task(self._move_from_waiting_to_unallocated(username, gameserver_handler))
-
-    async def _move_from_waiting_to_unallocated(self, username, gameserver_handler: GameServerHandler):
-        print("_move_from_waiting_to_unallocated")
-        await asyncio.sleep(5)
-        print("after 10 second")
-        print(self.waiting_gameserver_handlers_by_username.items())
-        if username in self.waiting_gameserver_handlers_by_username:
-            handler: GameServerHandler = self.waiting_gameserver_handlers_by_username.pop(username)
-            if handler == gameserver_handler:
-                abort_message = {
-                    "type": "abort_game",
-                    "username": username
-                }
-
-                tcp_server_client = handler.tcp_client
-                await tcp_server_client.send(BaseMessage(abort_message))
-                self.free_gameserver_handlers.append(handler)
-                handler.state = handler.states[0]
-
-
 class ClientHandlerState(enum.Enum):
     CONNECTED = 0
     DISCONNECTED = 1
 
 
 class ClientHandler:
-    def __init__(self, tcp_client: BaseTCPClient, gameserver_repo: GameServerRepository):
+    def __init__(self, tcp_client: BaseTCPClient, chatroom_repo: ChatroomRepository):
         self.tcp_client: BaseTCPClient = tcp_client
-        self.gameserver_repo: GameServerRepository = gameserver_repo
+        self.chatroom_repo: ChatroomRepository = chatroom_repo
         self.state = ClientHandlerState.DISCONNECTED
 
     async def handle_client(self, tcp_client: BaseTCPClient):
@@ -226,39 +228,33 @@ class ClientHandler:
         self.state = ClientHandlerState.DISCONNECTED
 
     async def handle_game(self, tcp_client: BaseTCPClient, start_message: BaseMessage, is_single_player_game: bool):
-        while True:
-            username = start_message.content['username']
-            waiting_gameserver_handler = self.gameserver_repo.pop_waiting_gameserver_handler(username)
-            gameserver_handler: GameServerHandler
-            if waiting_gameserver_handler:
-                gameserver_handler = waiting_gameserver_handler
-            else:
-                try:
-                    tasks = [asyncio.create_task(x) for x in
-                             [self.gameserver_repo.pop_free_gameserver_handler(is_single_player_game),
-                              self._handle_waiting_user_commands(tcp_client)]]
-                    gameserver_handler = await utils.wait_until_first_completed(tasks)
-                except ChangeGameException:
-                    break
-                except ClientConnectionException:
-                    raise
-
-
+        username = start_message.content['username']
+        waiting_chatroom = self.chatroom_repo.pop_waiting_chatroom(username)
+        chatroom: ChatRoom
+        if waiting_chatroom:
+            chatroom = waiting_chatroom
+        else:
             try:
-                await gameserver_handler.chatroom.add_client(tcp_client, start_message)
-            except ServerConnectionException:
-                server_crashed_message = {
-                    "type": "server_crashed"
-                }
+                tasks = [asyncio.create_task(x) for x in
+                         [self.chatroom_repo.pop_free_chatroom(is_single_player_game),
+                          self._handle_waiting_user_commands(tcp_client)]]
+                chatroom = await utils.wait_until_first_completed(tasks)
+            except ChangeGameException:
+                return
 
-                await tcp_client.send(BaseMessage(server_crashed_message))
-                break
-            except ClientConnectionException:
-                # self.gameserver_repo.move_to_waiting(username, gameserver_handler)
-                raise ClientConnectionException("error")
+        try:
+            await chatroom.add_client(tcp_client, start_message)
+            self.chatroom_repo.free_chat_rooms[chatroom.room_id] = chatroom
+        except ServerConnectionException:
+            self.chatroom_repo.remove_chatroom(chatroom)
+            server_crashed_message = {
+                "type": "server_crashed"
+            }
+            await tcp_client.send(BaseMessage(server_crashed_message))
+        except ClientConnectionException:
+            self.chatroom_repo.waiting_chatrooms_by_username[username] = chatroom
+            raise
 
-            self.gameserver_repo.free_gameserver_handlers.append(gameserver_handler)
-            break
 
     async def _handle_waiting_user_commands(self, tcp_client: BaseTCPClient):
         while True:
@@ -280,9 +276,9 @@ class ClientRepository:
 
 
 class WebServer:
-    def __init__(self, client_repo: ClientRepository, game_server_repo: GameServerRepository):
+    def __init__(self, client_repo: ClientRepository, chatroom_repo: ChatroomRepository):
         self.client_repo: ClientRepository = client_repo
-        self.game_server_repo: GameServerRepository = game_server_repo
+        self.chatroom_repo: ChatroomRepository = chatroom_repo
 
     async def accept_client(self):
         logger.info(
@@ -291,29 +287,26 @@ class WebServer:
         while True:
             tcp_client: BaseTCPClient = await self.client_repo.tcp_server.accept()
             logger.debug("A new user socket accepted.")
-            client_socket_handler = ClientHandler(tcp_client, self.game_server_repo)
+            client_socket_handler = ClientHandler(tcp_client, self.chatroom_repo)
             self.client_repo.client_handlers.append(client_socket_handler)
             self.client_repo.loop.create_task(client_socket_handler.handle_client(tcp_client))
 
     async def accept_gameserver(self):
         logger.info(
-            f'start of SocketServer-accept with host={self.game_server_repo.tcp_server.host} and port={self.game_server_repo.tcp_server.port}')
+            f'start of SocketServer-accept with host={self.chatroom_repo.tcp_server.host} and port={self.chatroom_repo.tcp_server.port}')
 
         while True:
-            tcp_client: BaseTCPClient = await self.game_server_repo.tcp_server.accept()
+            tcp_client: BaseTCPClient = await self.chatroom_repo.tcp_server.accept()
             logger.info('A new GameServer socket accepted')
             handshake_message = await tcp_client.receive()
             server_address = (handshake_message.content["host"], handshake_message.content["port"])
             logger.info(f'The new GameServer is located at {server_address}')
-            server_socket_handler = GameServerHandler(tcp_client, server_address)
+            gameserver_handler = GameServerHandler(tcp_client, server_address, self.chatroom_repo)
 
-            self.game_server_repo.all_gameserver_handlers.append(server_socket_handler)
-            self.game_server_repo.free_gameserver_handlers.append(server_socket_handler)
-
-            self.game_server_repo.loop.create_task(server_socket_handler.handle_gameserver(tcp_client))
+            self.chatroom_repo.loop.create_task(gameserver_handler.handle_gameserver())
 
 
-async def control_console(game_server_socket_server: GameServerRepository,
+async def control_console(game_server_socket_server: ChatroomRepository,
                           clients_socket_server: ClientRepository):
     while True:
         print("WebServer Console".center(40, '*'))
@@ -321,21 +314,21 @@ async def control_console(game_server_socket_server: GameServerRepository,
         if line == '/users':
             print("number of connected clients: ", clients_socket_server.get_number_of_connected_clients())
         elif line == '/servers':
-            game_server_socket_server.all_gameserver_handlers = [x for x in
-                                                                 game_server_socket_server.all_gameserver_handlers if
-                                                                 x.state != "disconnected"]
-            print("number of running servers: ", len(game_server_socket_server.all_gameserver_handlers))
+            game_server_socket_server.all_chat_rooms = [x for x in
+                                                        game_server_socket_server.all_chat_rooms if
+                                                        x.state != "disconnected"]
+            print("number of running servers: ", len(game_server_socket_server.all_chat_rooms))
 
 
 async def start_webserver():
     logger.info('start of start_webserver')
-    game_server_repo = GameServerRepository(WEBSERVER_HOST, WEBSERVER_GAMESERVER_REPO_PORT)
+    chatroom_repo = ChatroomRepository(WEBSERVER_HOST, WEBSERVER_GAMESERVER_REPO_PORT)
     client_repo = ClientRepository(WEBSERVER_HOST, WEBSERVER_CLIENT_REPO_PORT)
-    web_server = WebServer(client_repo, game_server_repo)
+    web_server = WebServer(client_repo, chatroom_repo)
     await asyncio.gather(*[
         asyncio.create_task(web_server.accept_gameserver()),
         asyncio.create_task(web_server.accept_client()),
-        asyncio.create_task(control_console(game_server_repo, client_repo))
+        asyncio.create_task(control_console(chatroom_repo, client_repo))
     ])
     logger.info('end of start_webserver')
 
